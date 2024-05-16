@@ -1,0 +1,53 @@
+- name: Playbook to adopt resources that already exist in the cluster.
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    release_name: staging
+    namespace: hello-world
+    chart_dir: charts/hello-world
+    chart_name: hello-world
+    output_dir: /tmp/mycharts
+    kubeconfig_path: /home/agarciac/.kube/config
+
+  tasks:
+
+    - name: Render templates to specified directory
+      kubernetes.core.helm_template:
+        chart_ref: "{{ chart_dir }}"
+        output_dir: "{{ output_dir }}"
+        release_name: "{{ release_name }}"
+
+    - name: Read manifest definitions
+      ansible.builtin.include_vars:
+        file: "{{ __read_manifest_definitions_item }}"
+      loop: "{{ lookup('ansible.builtin.fileglob', output_dir + '/'+ chart_name + '/templates/*.yaml') | split(',') }}"
+      loop_control:
+        loop_var: __read_manifest_definitions_item
+      register: __contents_manifest
+
+    - name: "Populate Job Templates list"
+      ansible.builtin.set_fact:
+        __populate_manifest: "{{ ( __populate_manifest | default([]) ) + [{'kind': __contents_manifest_list_item.ansible_facts.kind, 'name': __contents_manifest_list_item.ansible_facts.metadata.name }] }}"
+      loop: "{{ __contents_manifest.results }}"
+      loop_control:
+        loop_var: __contents_manifest_list_item
+
+    - name: Add helm label and annotations to existing resources
+      redhat.openshift.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: patched
+        kind: "{{ __populate_manifest_list_item.kind }}"
+        name: "{{ __populate_manifest_list_item.name }}"
+        namespace: "{{ namespace }}"
+        definition:
+          metadata:
+            labels:
+              app.kubernetes.io/managed-by: Helm
+            annotations:
+              meta.helm.sh/release-name: "{{ release_name }}"
+              meta.helm.sh/release-namespace: "{{ namespace }}"
+      loop: "{{ __populate_manifest }}"
+      loop_control:
+        loop_var: __populate_manifest_list_item
